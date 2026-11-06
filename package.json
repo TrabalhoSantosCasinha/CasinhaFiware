@@ -1,0 +1,12 @@
+{
+  "name": "casinha-fiware",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "provision": "node provision.js",
+    "simulate": "node simulador.js"
+  },
+  "dependencies": {
+    "mqtt": "^5.10.1"
+  }
+}
