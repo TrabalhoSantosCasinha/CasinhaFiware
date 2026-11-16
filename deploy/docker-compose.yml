@@ -1,0 +1,128 @@
+# Deploy completo da Casinha numa VM:
+#   FIWARE (Mongo + Orion + IoT Agent UL + STH-Comet) + backend + Caddy (HTTPS automático)
+# Só o Caddy fica exposto na internet (portas 80/443). O resto conversa pela rede interna do Docker.
+#
+# Estrutura esperada na VM (os dois repositórios lado a lado):
+#   ~/casinha/CasinhaFiware   (este repo; este arquivo em deploy/)
+#   ~/casinha/CasinhaBackend
+#
+# Uso:  cd CasinhaFiware/deploy && cp .env.example .env && (edite) && docker compose up -d --build
+name: casinha
+
+services:
+  mongo-db:
+    image: mongo:${MONGO_VERSION:-4.4}
+    command: --nojournal
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongo", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  orion:
+    image: fiware/orion:${ORION_VERSION:-3.10.1}
+    restart: unless-stopped
+    depends_on:
+      mongo-db:
+        condition: service_healthy
+    command: -dbhost mongo-db -logLevel INFO
+
+  iot-agent:
+    image: fiware/iotagent-ul:${ULTRALIGHT_VERSION:-3.4.0}
+    restart: unless-stopped
+    depends_on:
+      mongo-db:
+        condition: service_healthy
+      orion:
+        condition: service_started
+    environment:
+      - IOTA_CB_HOST=orion
+      - IOTA_CB_PORT=1026
+      - IOTA_CB_NGSI_VERSION=v2
+      - IOTA_NORTH_PORT=4041
+      - IOTA_REGISTRY_TYPE=mongodb
+      - IOTA_MONGO_HOST=mongo-db
+      - IOTA_MONGO_PORT=27017
+      - IOTA_MONGO_DB=iotagentul
+      - IOTA_PROVIDER_URL=http://iot-agent:4041
+      - IOTA_MQTT_HOST=${MQTT_HOST:-broker.hivemq.com}
+      - IOTA_MQTT_PORT=${MQTT_PORT:-1883}
+      - IOTA_DEFAULT_RESOURCE=
+      - IOTA_TIMESTAMP=true
+      - IOTA_AUTOCAST=true
+      - IOTA_AMQP_DISABLED=true
+      - IOTA_LOG_LEVEL=INFO
+
+  sth-comet:
+    image: fiware/sth-comet:${STH_COMET_VERSION:-2.11.0}
+    restart: unless-stopped
+    depends_on:
+      mongo-db:
+        condition: service_healthy
+    environment:
+      - STH_HOST=0.0.0.0
+      - STH_PORT=8666
+      - DB_PREFIX=sth_
+      - DB_URI=mongo-db:27017
+      - LOGOPS_LEVEL=INFO
+
+  # Roda o provision.js uma vez a cada "up" (é idempotente) e encerra.
+  # Tenta por até ~2,5 min, porque o IoT Agent demora alguns segundos para subir.
+  provision:
+    image: node:20-alpine
+    working_dir: /fiware
+    volumes:
+      - ../:/fiware:ro
+    environment:
+      - ORION_URL=http://orion:1026
+      - IOTA_URL=http://iot-agent:4041
+      - APIKEY=${APIKEY:-casinha-fiap-7k2q9}
+    command: sh -c 'for i in $$(seq 1 30); do node provision.js && exit 0; echo "aguardando FIWARE ($$i/30)..."; sleep 5; done; exit 1'
+    depends_on:
+      - orion
+      - iot-agent
+      - sth-comet
+    restart: "no"
+
+  backend:
+    build: ../../CasinhaBackend
+    restart: unless-stopped
+    depends_on:
+      - orion
+      - iot-agent
+      - sth-comet
+    environment:
+      - PORT=4000
+      - ORION_URL=http://orion:1026
+      - IOTA_URL=http://iot-agent:4041
+      - STH_URL=http://sth-comet:8666
+      - APIKEY=${APIKEY:-casinha-fiap-7k2q9}
+      - MQTT_BROKER=${MQTT_HOST:-broker.hivemq.com}:${MQTT_PORT:-1883}
+      - CORS_ORIGIN=${CORS_ORIGIN:-}
+    volumes:
+      - backend-data:/app/data
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      - DOMAIN=${DOMAIN:?defina DOMAIN no .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  mongo-data:
+  backend-data:
+  caddy-data:
+  caddy-config:

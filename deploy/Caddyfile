@@ -1,0 +1,5 @@
+# Caddy pede e renova o certificado HTTPS (Let's Encrypt) sozinho para o DOMAIN do .env
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy backend:4000
+}
