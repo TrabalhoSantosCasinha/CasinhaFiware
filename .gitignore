@@ -8,3 +8,5 @@ backend/data/
 
 # senha do Wi-Fi do ESP32
 fiwares/esp32/casinha/secrets.h
+esp32/casinha/secrets.h
+deploy/.env
