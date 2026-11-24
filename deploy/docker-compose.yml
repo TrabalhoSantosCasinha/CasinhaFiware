@@ -1,10 +1,12 @@
-# Deploy completo da Casinha numa VM:
-#   FIWARE (Mongo + Orion + IoT Agent UL + STH-Comet) + backend + Caddy (HTTPS automático)
-# Só o Caddy fica exposto na internet (portas 80/443). O resto conversa pela rede interna do Docker.
+# Deploy completo da Casinha: FIWARE (Mongo + Orion + IoT Agent UL + STH-Comet) + backend
+# + uma porta de entrada HTTPS, escolhida por COMPOSE_PROFILES no .env:
+#   pc -> ngrok (roda no seu computador, sem abrir portas)
+#   vm -> Caddy (numa VM com IP público, portas 80/443)
+# Orion, IoT Agent, STH e Mongo nunca ficam expostos; tudo conversa pela rede interna do Docker.
 #
-# Estrutura esperada na VM (os dois repositórios lado a lado):
-#   ~/casinha/CasinhaFiware   (este repo; este arquivo em deploy/)
-#   ~/casinha/CasinhaBackend
+# Os dois repositórios precisam estar lado a lado:
+#   .../CasinhaFiware   (este repo; este arquivo em deploy/)
+#   .../CasinhaBackend
 #
 # Uso:  cd CasinhaFiware/deploy && cp .env.example .env && (edite) && docker compose up -d --build
 name: casinha
@@ -105,8 +107,21 @@ services:
     volumes:
       - backend-data:/app/data
 
+  # Opção "pc": túnel HTTPS do ngrok até o backend
+  ngrok:
+    image: ngrok/ngrok:latest
+    profiles: ["pc"]
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
+    command: ["http", "backend:4000", "--url=${NGROK_URL:-}"]
+
+  # Opção "vm": Caddy com certificado do Let's Encrypt
   caddy:
     image: caddy:2-alpine
+    profiles: ["vm"]
     restart: unless-stopped
     depends_on:
       - backend
@@ -115,7 +130,7 @@ services:
       - "443:443"
       - "443:443/udp"
     environment:
-      - DOMAIN=${DOMAIN:?defina DOMAIN no .env}
+      - DOMAIN=${DOMAIN:-localhost}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
