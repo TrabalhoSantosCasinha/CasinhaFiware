@@ -6,19 +6,21 @@
  *   - ESP32Servo    (Kevin Harrington)
  *
  * Ligações (ajuste os pinos abaixo se precisar):
- *   LDR (divisor de tensão com resistor 10k) -> GPIO 34 (entrada analógica)
+ *   Sensor de luz (módulo LDR, saída DO)     -> GPIO 32   (VCC no 3V3)
+ *   Sensor de chuva (FC-37 + YL-38, saída DO) -> GPIO 35  (VCC no 3V3)
  *   Luz 1 / Luz 2 / Luz 3 (LED ou relé)      -> GPIO 25 / 26 / 27
  *   Servo da janela                          -> GPIO 13
  *   Servo do varal                           -> GPIO 33
- *   Servos: alimente com 5V externo e GND em comum com o ESP32.
+ *   Servos: vermelho no VIN (5 V da USB) e GND em comum com o ESP32.
  *
  * Tópicos (UltraLight 2.0):
- *   publica  /<APIKEY>/<device>/attrs    ex: "l|73"  ou  "s|on"
+ *   publica  /<APIKEY>/<device>/attrs    ex: "l|73", "r|1"  ou  "s|on"
  *   assina   /<APIKEY>/<device>/cmd      ex: "lamp001@on|"
  *   responde /<APIKEY>/<device>/cmdexe   ex: "lamp001@on|on"
  */
 
 #include <WiFi.h>
+#include <WiFiMulti.h>
 #include <PubSubClient.h>
 #include <ESP32Servo.h>
 
@@ -38,6 +40,11 @@ const int PIN_LDR       = 32;
 const int PIN_LAMPS[3]  = {25, 26, 27};
 const int PIN_WINDOW    = 13;
 const int PIN_CLOTHES   = 33;  // não use o GPIO 12: é pino de boot
+const int PIN_RAIN      = 35;  // DO do sensor de chuva (GPIO 35 é só entrada; o módulo já tem pull-up)
+
+// Sensor de chuva ligado? Coloque false se ele não estiver na maquete:
+// com o pino solto a leitura fica aleatória e a casa acharia que está chovendo.
+const bool HAS_RAIN_SENSOR = true;
 
 // Ângulos dos servos (calibre na sua maquete)
 const int WINDOW_CLOSED_ANGLE  = 0;
@@ -56,7 +63,7 @@ const int LDR_DARK  = 0;     // valor no escuro (módulo LDR de 3 pinos? inverta
 const int LDR_LIGHT = 4095;  // valor com muita luz (módulo LDR de 3 pinos? inverta: 0)
 
 // Módulo LDR com só 3 pinos (VCC, GND, DO)? Ele não tem saída analógica:
-// coloque true e ligue o DO no GPIO 34. O painel vai mostrar 0% (escuro) ou 100% (claro).
+// coloque true e ligue o DO no GPIO 32. O painel vai mostrar 0% (escuro) ou 100% (claro).
 // O ponto de virada é ajustado no parafusinho azul (potenciômetro) do módulo.
 const bool LDR_DIGITAL_ONLY = true;
 
@@ -69,6 +76,7 @@ const int PIN_BUILTIN_LED = 2;
 
 const char* LAMP_IDS[3] = {"lamp001", "lamp002", "lamp003"};
 
+WiFiMulti wifiMulti;
 WiFiClient espClient;
 PubSubClient mqtt(espClient);
 Servo windowServo;
@@ -77,6 +85,7 @@ Servo clothesServo;
 bool lampOn[3] = {false, false, false};
 bool windowOpen = false;
 bool clothesExtended = false;
+int lastRain = -1;  // -1 = ainda não leu; 1 = chovendo; 0 = seco
 unsigned long lastLuminosity = 0;
 unsigned long lastHeartbeat = 0;
 unsigned long ledOffAt = 0;
@@ -109,6 +118,12 @@ void moveServo(Servo& s, int fromAngle, int toAngle, unsigned long durationMs) {
     delay(20);
   }
   s.writeMicroseconds(toUs);
+}
+
+// "r|1" = chovendo, "r|0" = seco
+void publishRain(int raining) {
+  String payload = String("r|") + raining;
+  mqtt.publish(topic("rain001", "attrs").c_str(), payload.c_str());
 }
 
 void publishAllStates() {
@@ -177,15 +192,24 @@ void onMessage(char* t, byte* payload, unsigned int length) {
   }
 }
 
-void connectWifi() {
-  Serial.printf("Conectando no WiFi %s", WIFI_SSID);
+// Cadastra as redes de secrets.h. A segunda (hotspot) só entra se foi preenchida.
+void setupWifiNetworks() {
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+  wifiMulti.addAP(WIFI_SSID, WIFI_PASSWORD);
+  Serial.printf("Rede 1: %s\n", WIFI_SSID);
+  if (strlen(WIFI_SSID_2) > 0 && strcmp(WIFI_SSID_2, "NOME_DO_HOTSPOT") != 0) {
+    wifiMulti.addAP(WIFI_SSID_2, WIFI_PASSWORD_2);
+    Serial.printf("Rede 2: %s\n", WIFI_SSID_2);
+  }
+}
+
+// Procura as redes cadastradas e conecta na que tiver sinal mais forte.
+void connectWifi() {
+  Serial.print("Conectando no WiFi");
+  while (wifiMulti.run(5000) != WL_CONNECTED) {
     Serial.print(".");
   }
-  Serial.printf("\nWiFi OK, IP %s\n", WiFi.localIP().toString().c_str());
+  Serial.printf("\nWiFi OK: %s, IP %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
 }
 
 void connectMqtt() {
@@ -217,6 +241,7 @@ void setup() {
   analogReadResolution(12);
   // Módulo digital: pull-up interno deixa o sinal estável (GPIO 34-39 não têm pull-up; use 32 ou 33)
   if (LDR_DIGITAL_ONLY) pinMode(PIN_LDR, INPUT_PULLUP);
+  if (HAS_RAIN_SENSOR) pinMode(PIN_RAIN, INPUT);
 
   windowServo.setPeriodHertz(50);
   clothesServo.setPeriodHertz(50);
@@ -225,6 +250,7 @@ void setup() {
   windowServo.write(WINDOW_CLOSED_ANGLE);
   clothesServo.write(CLOTHES_RETRACTED_ANGLE);
 
+  setupWifiNetworks();
   connectWifi();
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   mqtt.setCallback(onMessage);
@@ -252,6 +278,22 @@ void loop() {
     String payload = String("l|") + pct;
     mqtt.publish(topic("ldr001", "attrs").c_str(), payload.c_str());
     Serial.printf("LDR cru=%d -> %d%%\n", raw, pct);
+    if (HAS_RAIN_SENSOR && lastRain >= 0) publishRain(lastRain);  // repete junto com a luz
+  }
+
+  // Chuva: lê sempre e avisa na hora em que muda (com 300 ms de confirmação contra ruído)
+  if (HAS_RAIN_SENSOR) {
+    static int candidate = -1;
+    static unsigned long candidateSince = 0;
+    int now = (digitalRead(PIN_RAIN) == LOW) ? 1 : 0;  // DO do módulo: LOW = molhado
+    if (now != candidate) {
+      candidate = now;
+      candidateSince = millis();
+    } else if (now != lastRain && millis() - candidateSince >= 300) {
+      lastRain = now;
+      publishRain(lastRain);
+      Serial.println(lastRain ? "Chuva: MOLHADO" : "Chuva: seco");
+    }
   }
 
   if (millis() - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {

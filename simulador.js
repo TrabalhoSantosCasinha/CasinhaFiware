@@ -1,4 +1,4 @@
-// Simula o ESP32 (sensor de luz, 3 lâmpadas, servo da janela e servo do varal)
+// Simula o ESP32 (sensor de luz, sensor de chuva, 3 lâmpadas, servo da janela e servo do varal)
 // para testar sem hardware. Uso: npm run simulate
 import mqtt from 'mqtt';
 import { APIKEY, MQTT_URL, DEVICES } from './config.js';
@@ -64,3 +64,16 @@ setInterval(() => {
   const lum = Math.max(0, Math.min(100, Math.round(50 + 40 * Math.sin(t) + (Math.random() * 10 - 5))));
   client.publish(attrsTopic('ldr001'), `l|${lum}`);
 }, 3000);
+
+// chuva: digite "c" + Enter no terminal para começar/parar de chover
+let raining = 0;
+const publishRain = () => client.publish(attrsTopic('rain001'), `r|${raining}`);
+setInterval(publishRain, 3000);
+console.log('Digite "c" + Enter para simular chuva (de novo para parar).');
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (txt) => {
+  if (txt.trim().toLowerCase() !== 'c') return;
+  raining = raining ? 0 : 1;
+  publishRain();
+  console.log(raining ? '🌧️  Começou a chover' : '☀️  Parou de chover');
+});

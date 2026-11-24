@@ -21,6 +21,13 @@ export const DEVICES = [
     transport: 'MQTT',
     attributes: [{ object_id: 'l', name: 'luminosity', type: 'Integer' }],
   },
+  {
+    device_id: 'rain001',
+    entity_name: 'urn:ngsi-ld:RainSensor:001',
+    entity_type: 'RainSensor',
+    transport: 'MQTT',
+    attributes: [{ object_id: 'r', name: 'raining', type: 'Integer' }], // 1 = chovendo, 0 = seco
+  },
   ...['001', '002', '003'].map((n) => ({
     device_id: `lamp${n}`,
     entity_name: `urn:ngsi-ld:Lamp:${n}`,
